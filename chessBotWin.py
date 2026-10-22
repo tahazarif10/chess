@@ -3,8 +3,7 @@ Chess Game with Human-like AI
 Optimized for performance and stability
 """
 
-import pygame, chess, chess.engine, random, time, sys, os, chess.pgn, shutil
-from pathlib import Path
+import pygame, chess, chess.engine, random, time, sys, os, chess.pgn
 from datetime import datetime
 from threading import Thread, Lock
 from collections import OrderedDict
@@ -28,28 +27,9 @@ WHITE_COLOR, DARK_COLOR = (238, 238, 210), (118, 150, 86)
 HIGHLIGHT_COLOR = (255, 255, 0, 180)  # Yellow highlight for last move
 SELECT_COLOR = (100, 200, 255, 200)  # Blue highlight for selected square
 MOVE_HINT_COLOR = (150, 255, 150, 120)  # Green hint for possible moves
-BASE_DIR = Path(__file__).resolve().parent
-# Override with STOCKFISH_EXECUTABLE and CHESS_PIECES_DIR when needed.
-PIECE_FOLDER = os.environ.get("CHESS_PIECES_DIR", str(BASE_DIR / "pieces"))
-
-def resolve_engine_path():
-    """Find Stockfish portably instead of relying on the author's local drive."""
-    override = os.environ.get("STOCKFISH_EXECUTABLE")
-    candidates = [
-        override,
-        shutil.which("stockfish"),
-        str(BASE_DIR / "stockfish" / "stockfish-windows-x86-64-avx2.exe"),
-        str(BASE_DIR / "stockfish" / "stockfish.exe"),
-        str(BASE_DIR / "stockfish.exe"),
-    ]
-    for candidate in candidates:
-        if candidate and Path(candidate).is_file():
-            return str(Path(candidate).resolve())
-    if override:
-        resolved = shutil.which(override)
-        if resolved:
-            return resolved
-    return None
+# Keep the original installation paths exactly as in the user's version.
+ENGINE_PATH = r"J:\vs code\python\chessGame\stockfish\stockfish-windows-x86-64-avx2.exe"
+PIECE_FOLDER = r"J:\vs code\python\chessGame\pieces"
 
 # Simple transposition cache (LRU, max 50 entries)
 class SimpleCache:
@@ -81,16 +61,10 @@ class ChessGame:
         
         # Initialize engine with error handling
         try:
-            engine_path = resolve_engine_path()
-            if not engine_path:
-                raise FileNotFoundError(
-                    "Stockfish was not found. Install it and add it to PATH, "
-                    "or set STOCKFISH_EXECUTABLE to the full executable path."
-                )
-            self.engine = chess.engine.SimpleEngine.popen_uci(engine_path)
+            self.engine = chess.engine.SimpleEngine.popen_uci(ENGINE_PATH)
         except Exception as e:
             print(f"❌ Engine initialization failed: {e}")
-            print("   Set STOCKFISH_EXECUTABLE or add stockfish to PATH.")
+            print(f"   Check the original Stockfish path: {ENGINE_PATH}")
             sys.exit(1)
         
         self.piece_images = self.load_piece_images()
