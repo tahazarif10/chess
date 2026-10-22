@@ -27,6 +27,7 @@ WHITE_COLOR, DARK_COLOR = (238, 238, 210), (118, 150, 86)
 HIGHLIGHT_COLOR = (255, 255, 0, 180)  # Yellow highlight for last move
 SELECT_COLOR = (100, 200, 255, 200)  # Blue highlight for selected square
 MOVE_HINT_COLOR = (150, 255, 150, 120)  # Green hint for possible moves
+# Keep the original installation paths exactly as in the user's version.
 ENGINE_PATH = r"J:\vs code\python\chessGame\stockfish\stockfish-windows-x86-64-avx2.exe"
 PIECE_FOLDER = r"J:\vs code\python\chessGame\pieces"
 
@@ -63,7 +64,7 @@ class ChessGame:
             self.engine = chess.engine.SimpleEngine.popen_uci(ENGINE_PATH)
         except Exception as e:
             print(f"❌ Engine initialization failed: {e}")
-            print(f"   Check path: {ENGINE_PATH}")
+            print(f"   Check the original Stockfish path: {ENGINE_PATH}")
             sys.exit(1)
         
         self.piece_images = self.load_piece_images()
@@ -693,12 +694,7 @@ class ChessGame:
             # Generate candidate moves - always consider 3-6 reasonable candidates
             try:
                 candidate_moves = self._generate_candidate_moves_optimized_thread(temp_board, legal, phase, is_losing, score)
-                # Ensure we have 3-6 candidates for human behavior
-                if len(candidate_moves) < 3 and len(legal) >= 3:
-                    # Add more candidates if needed (human considers multiple options)
-                    remaining = [m for m in legal if m not in [cm[0] for cm in candidate_moves]]
-                    for move in remaining[:6 - len(candidate_moves)]:
-                        candidate_moves.append((move, score))  # Use current score as estimate
+                # Do not invent scores for unsearched legal moves. Only use engine-scored candidates.
             except Exception as e:
                 print(f"⚠️ Candidate generation error: {e}")
                 import traceback
@@ -712,61 +708,23 @@ class ChessGame:
                 self._ai_move_queue.put((start_fen, legal[0] if legal else None))
                 return
             
-            # Safety window filtering - 15-45cp window for human realism
+            # Keep variation among genuinely comparable moves only. Scores are from White's perspective.
             best_score = candidate_moves[0][1] if candidate_moves else score
-            safety_window = self._calculate_safety_window_human(is_winning, is_losing, phase, abs(score))
-            
+            safety_window = self._calculate_safety_window_human(
+                is_winning, is_losing, phase, abs(score)
+            )
             safe_candidates = []
             for move, move_score in candidate_moves:
-                score_diff_from_best = abs(move_score - best_score) if best_score is not None else 0
-                score_diff_from_current = abs(move_score - score) if score is not None else 0
-                
-                # Never allow blunders (>80cp loss) - much tighter threshold for stronger play
-                if score_diff_from_current > 80:
-                    continue
-                
-                # Human window: Tighter when winning for stronger play
-            human_window = safety_window
-            if is_winning:
-                # When winning: rarely expand window (stronger play)
-                if random.random() < 0.10:  # Only 10% chance when winning
-                    human_window = safety_window * random.uniform(1.1, 1.4)
-            else:
-                # When not winning: normal human variation
-                if random.random() < 0.25:  # 25% chance to expand window (human imperfection)
-                    human_window = safety_window * random.uniform(1.2, 1.8)
-            
-            if is_winning:
                 if temp_board.turn == chess.WHITE:
-                    if move_score >= best_score - human_window:
-                        safe_candidates.append((move, move_score))
+                    score_loss_from_best = best_score - move_score
                 else:
-                    if move_score <= best_score + human_window:
-                        safe_candidates.append((move, move_score))
-            elif is_losing:
-                # When behind: wider window for counterplay
-                if temp_board.turn == chess.WHITE:
-                    if move_score >= best_score - human_window:
-                        safe_candidates.append((move, move_score))
-                else:
-                    if move_score <= best_score + human_window:
-                        safe_candidates.append((move, move_score))
-            else:
-                # When equal: wider window for human variation
-                if score_diff_from_best <= human_window:
+                    score_loss_from_best = move_score - best_score
+                if 0 <= score_loss_from_best <= safety_window:
                     safe_candidates.append((move, move_score))
-            
-            # Ensure we have 3-6 reasonable candidates (human behavior requirement)
-            if not safe_candidates:
-                safe_candidates = candidate_moves[:6]  # Take top 6 if window too restrictive
-            elif len(safe_candidates) < 3:
-                # Expand slightly to get at least 3 candidates
-                for move, move_score in candidate_moves[len(safe_candidates):]:
-                    if len(safe_candidates) >= 6:
-                        break
-                    score_diff_from_best = abs(move_score - best_score) if best_score is not None else 0
-                    if score_diff_from_best <= safety_window * 1.2:  # Slightly wider
-                        safe_candidates.append((move, move_score))
+
+            # Never widen the window by adding unscored or clearly inferior moves.
+            if not safe_candidates and candidate_moves:
+                safe_candidates = candidate_moves[:1]
             
             # Score moves
             scored_moves = []
@@ -776,11 +734,16 @@ class ChessGame:
                 combined_score = self._combine_scores_enhanced(strength_score, human_score, is_winning, is_losing, phase)
                 scored_moves.append((move, move_score, human_score, combined_score))
             
-            scored_moves.sort(key=lambda x: x[3], reverse=True)
+            # Rank by engine evaluation first; style is only a tie-breaker.
+            # Candidate scores are normalized to White's perspective.
+            scored_moves.sort(
+                key=lambda x: (x[1] if temp_board.turn == chess.WHITE else -x[1], x[3]),
+                reverse=True
+            )
             
             # Select move
             try:
-                selected = self._probabilistic_select_enhanced(scored_moves, is_winning, is_losing, phase)
+                selected = self._probabilistic_select_enhanced(scored_moves, is_winning, is_losing, phase, temp_board.turn)
             except Exception as e:
                 print(f"⚠️ Selection error: {e}")
                 selected = None
@@ -894,7 +857,7 @@ class ChessGame:
             time_budget *= 1.2  # More time in opening
         
         limit = chess.engine.Limit(time=time_budget, depth=AI_MAX_DEPTH)
-        multipv_count = min(15, len(legal_moves))  # More candidates for better selection
+        multipv_count = min(5, len(legal_moves))  # Spend more search effort per candidate
         
         try:
             analysis = self._safe_engine_analyse(board, limit, multipv=multipv_count)
@@ -998,11 +961,7 @@ class ChessGame:
             if not board.is_capture(move) and not test_board.is_check():
                 if abs(move_score - position_score) < 30:
                     score += 15  # Quiet positional moves
-            # Avoid multi-move tactical calculations (human limitation)
-            if abs(move_score - position_score) > 150:
-                # Huge tactical jump - might be too engine-like
-                if random.random() > 0.25:  # 75% penalty chance (more aggressive)
-                    score -= 35  # Stronger penalty for engine-like tactics
+            # Do not penalize a forcing tactical improvement for being difficult to find.
         
         if is_winning and abs(position_score) > 150:
             # When ahead: Convert advantage more aggressively
@@ -1056,14 +1015,7 @@ class ChessGame:
             # Castling is very human (safety + development)
             score += 20
         
-        # STRONG penalties for engine-only signatures (anti-cheat protection)
-        if not board.is_capture(move) and not test_board.is_check():
-            if abs(move_score - position_score) < 8:
-                if not is_winning or abs(position_score) < 150:
-                    score -= 45  # MUCH STRONGER penalty for engine moves
-        if abs(move_score - position_score) > 200:
-            if random.random() > 0.20:  # 80% penalty chance
-                score -= 55  # MUCH STRONGER penalty for engine-exclusive tactics
+        # Never penalize a tactically correct move merely because it resembles an engine choice.
         
         if piece_type == chess.QUEEN:
             for opp_move in test_board.legal_moves:
@@ -1159,145 +1111,58 @@ class ChessGame:
         combined = (strength_score * weight_strength * 100) + (human_score * weight_human)
         return combined
     
-    def _probabilistic_select_enhanced(self, scored_moves, is_winning, is_losing, phase):
+    def _probabilistic_select_enhanced(self, scored_moves, is_winning, is_losing, phase, turn):
         """
-        Human move selection: 15-45cp window, 10-15% chance to choose second-best on purpose.
-        Never choose best move by default - always consider 3-6 reasonable candidates.
+        Offline human-style selection using a bounded engine-loss window plus
+        position-specific move preferences. This is a heuristic policy, not a
+        trained Maia/Allie neural model; engine quality remains a hard constraint.
         """
         if not scored_moves:
             return None
-        
-        # Check if moves are within 15-45cp window (human evaluation discipline)
-        if len(scored_moves) > 1:
-            best_score_val = scored_moves[0][1]
-            equivalent_moves = [scored_moves[0]]
-            for move_data in scored_moves[1:]:
-                score_diff = abs(move_data[1] - best_score_val)
-                # Allow moves within 45cp for human-like variation
-                if score_diff <= 45:
-                    equivalent_moves.append(move_data)
-                else:
-                    break
-        else:
-            equivalent_moves = scored_moves
-        
-        # Ensure we have 3-6 candidates (human requirement)
-        if len(equivalent_moves) < 3 and len(scored_moves) >= 3:
-            # Expand window slightly to get more candidates
-            best_score_val = scored_moves[0][1]
-            for move_data in scored_moves[len(equivalent_moves):]:
-                if len(equivalent_moves) >= 6:
-                    break
-                score_diff = abs(move_data[1] - best_score_val)
-                if score_diff <= 50:  # Slightly wider
-                    equivalent_moves.append(move_data)
-        
-        # Human decision making: More variation, sometimes suboptimal choices
-        # When winning: MUCH LESS suboptimal (stronger play to convert advantage)
-        if is_winning:
-            # When ahead: STRONGER play - reduce suboptimal moves significantly
-            deliberate_suboptimal = random.random() < random.uniform(0.05, 0.12)  # Reduced from 15-25%
-            choose_lower_rank = random.random() < random.uniform(0.02, 0.06)  # Reduced from 8-15%
-        else:
-            # When not winning: normal human variation
-            deliberate_suboptimal = random.random() < random.uniform(0.15, 0.25)
-            choose_lower_rank = random.random() < random.uniform(0.08, 0.15)
-        
-        if is_winning:
-            # When ahead: STRONGER play - prefer best moves to convert advantage
-            if len(equivalent_moves) == 1:
-                return equivalent_moves[0][0]
-            elif deliberate_suboptimal and len(equivalent_moves) >= 2:
-                # Only 5-12% chance: choose second-best (much less when winning)
-                if len(equivalent_moves) >= 3 and choose_lower_rank:
-                    return equivalent_moves[2][0] if len(equivalent_moves) > 2 else equivalent_moves[1][0]
-                else:
-                    return equivalent_moves[1][0]
-            elif len(equivalent_moves) <= 2:
-                # 75% best, 25% second (stronger when winning)
-                weights = [0.75, 0.25][:len(equivalent_moves)]
-            elif len(equivalent_moves) <= 3:
-                # 65% best, 25% second, 10% third (stronger when winning)
-                weights = [0.65, 0.25, 0.10][:len(equivalent_moves)]
-            else:
-                # 55% best, 25% second, 15% third, 5% fourth+ (stronger when winning)
-                weights = [0.55, 0.25, 0.15, 0.05][:len(equivalent_moves)]
+
+        best_score = scored_moves[0][1]
+        if is_winning or phase == "endgame":
+            max_loss = 12
+            loss_temperature = 7.0
+            human_influence = 0.30
         elif is_losing:
-            # When behind: Still human, but slightly more focused (survival instinct)
-            if deliberate_suboptimal and len(equivalent_moves) >= 2:
-                # Still allow suboptimal even when losing (human panic/confusion)
-                if random.random() < 0.4:  # 40% of 15-25% = ~6-10% total
-                    if len(equivalent_moves) >= 3 and choose_lower_rank:
-                        return equivalent_moves[2][0] if len(equivalent_moves) > 2 else equivalent_moves[1][0]
-                    else:
-                        return equivalent_moves[1][0]
-            if len(equivalent_moves) <= 2:
-                weights = [0.60, 0.40][:len(equivalent_moves)]  # More variation
-            elif len(equivalent_moves) <= 3:
-                weights = [0.50, 0.30, 0.20][:len(equivalent_moves)]
-            else:
-                weights = [0.45, 0.25, 0.20, 0.10][:len(equivalent_moves)]
+            max_loss = 24
+            loss_temperature = 13.0
+            human_influence = 0.65
         else:
-            # When equal: Maximum human variation (most "human" behavior)
-            if deliberate_suboptimal and len(equivalent_moves) >= 2:
-                # 15-25% chance: choose suboptimal
-                if len(equivalent_moves) >= 4 and choose_lower_rank:
-                    # Sometimes choose 4th best (human evaluation error)
-                    return equivalent_moves[3][0] if len(equivalent_moves) > 3 else equivalent_moves[2][0]
-                elif len(equivalent_moves) >= 3 and choose_lower_rank:
-                    return equivalent_moves[2][0]
-                else:
-                    return equivalent_moves[1][0]
-            if len(equivalent_moves) <= 2:
-                weights = [0.50, 0.50][:len(equivalent_moves)]  # Equal chance (human uncertainty)
-            elif len(equivalent_moves) <= 3:
-                weights = [0.40, 0.35, 0.25][:len(equivalent_moves)]  # More variation
-            else:
-                weights = [0.35, 0.30, 0.20, 0.15][:len(equivalent_moves)]  # Human variation
-        
-        # Endgame: stronger technique, still human-like
-        if phase == "endgame":
-            if len(weights) > 0:
-                weights[0] = min(0.80, weights[0] * 1.20)  # Stronger boost for endgame
-                total = sum(weights)
-                if total > 0:
-                    weights = [w / total for w in weights]
-        
-        # Personality adjustment (thread-safe) - minimal impact
-        with self._ai_lock:
-            risk_tolerance = self._ai_personality.get('risk_tolerance', 0.5)
-        if not is_winning and risk_tolerance > 0.6:
-            if len(weights) > 1:
-                weights[0] *= 0.92
-                weights[1] *= 1.08
-        elif not is_winning and risk_tolerance < 0.4:
-            if len(weights) > 0:
-                weights[0] = min(0.75, weights[0] * 1.03)
-        
-        # Normalize weights
-        total = sum(weights)
-        if total == 0:
-            return scored_moves[0][0] if scored_moves else None
-        
-        weights = [w / total for w in weights]
-        
-        try:
-            selected = random.choices(
-                [m[0] for m in equivalent_moves[:len(weights)]],
-                weights=weights
-            )[0]
-            return selected
-        except Exception as e:
-            print(f"⚠️ Probabilistic selection error: {e}")
-            import traceback
-            traceback.print_exc()
-            try:
-                return scored_moves[0][0] if scored_moves else None
-            except (IndexError, AttributeError) as fallback_error:
-                if __debug__:
-                    print(f"⚠️ Fallback selection error: {fallback_error}")
-                return None
-    
+            max_loss = 20
+            loss_temperature = 10.0
+            human_influence = 0.50
+
+        # Keep only moves close to the engine's best candidate. Preserve the
+        # existing tuple format: (move, engine_score, human_score, combined_score).
+        comparable = []
+        for item in scored_moves:
+            move, move_score = item[0], item[1]
+            loss = best_score - move_score if turn == chess.WHITE else move_score - best_score
+            if 0 <= loss <= max_loss:
+                human_score = float(item[2]) if len(item) > 2 else 50.0
+                combined_score = float(item[3]) if len(item) > 3 else human_score
+                comparable.append((move, loss, human_score, combined_score))
+
+        if not comparable:
+            return scored_moves[0][0]
+        if len(comparable) == 1:
+            return comparable[0][0]
+
+        best_human = max(item[2] for item in comparable)
+        best_combined = max(item[3] for item in comparable)
+        weights = []
+        for _, loss, human_score, combined_score in comparable:
+            # A softmax-like policy: engine loss suppresses weak moves, while
+            # natural move features affect the choice among comparably good moves.
+            engine_factor = 2.718281828 ** (-loss / loss_temperature)
+            human_factor = 2.718281828 ** (human_influence * (human_score - best_human) / 12.0)
+            combined_factor = 2.718281828 ** (0.20 * (combined_score - best_combined) / 12.0)
+            weights.append(max(0.001, engine_factor * human_factor * combined_factor))
+
+        return random.choices([item[0] for item in comparable], weights=weights, k=1)[0]
+
     def _calculate_thinking_time_optimized(self, complexity, is_losing, phase):
         """
         Human thinking time: COMPLETELY IRREGULAR and UNPREDICTABLE.
