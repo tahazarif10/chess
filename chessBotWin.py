@@ -883,7 +883,7 @@ class ChessGame:
             time_budget *= 1.2  # More time in opening
         
         limit = chess.engine.Limit(time=time_budget, depth=AI_MAX_DEPTH)
-        multipv_count = min(15, len(legal_moves))  # More candidates for better selection
+        multipv_count = min(5, len(legal_moves))  # Spend more search effort per candidate
         
         try:
             analysis = self._safe_engine_analyse(board, limit, multipv=multipv_count)
