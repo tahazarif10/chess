@@ -769,9 +769,7 @@ class ChessGame:
             
             # Select move
             try:
-                self._selection_turn = temp_board.turn
-                selected = self._probabilistic_select_enhanced(scored_moves, is_winning, is_losing, phase)
-                del self._selection_turn
+                selected = self._probabilistic_select_enhanced(scored_moves, is_winning, is_losing, phase, temp_board.turn)
             except Exception as e:
                 print(f"⚠️ Selection error: {e}")
                 selected = None
@@ -1139,7 +1137,7 @@ class ChessGame:
         combined = (strength_score * weight_strength * 100) + (human_score * weight_human)
         return combined
     
-    def _probabilistic_select_enhanced(self, scored_moves, is_winning, is_losing, phase):
+    def _probabilistic_select_enhanced(self, scored_moves, is_winning, is_losing, phase, turn):
         """
         Balanced offline selection: prioritize engine evaluation and vary only among
         moves that are close in centipawn loss. Never deliberately choose a large blunder.
@@ -1160,7 +1158,7 @@ class ChessGame:
         comparable = []
         for item in scored_moves:
             move, move_score = item[0], item[1]
-            loss = best_score - move_score if self._selection_turn == chess.WHITE else move_score - best_score
+            loss = best_score - move_score if turn == chess.WHITE else move_score - best_score
             if 0 <= loss <= max_loss:
                 comparable.append((move, move_score, loss))
 
