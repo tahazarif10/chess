@@ -47,6 +47,10 @@ python chessBotWin.py
 
 ## Notes on playing style and strength
 
-Stockfish performs the actual search. Candidate moves are now ordered by the engine evaluation before style preferences break ties, and the evaluation is no longer deliberately penalized merely for looking engine-like. Human-style selection still introduces variation, so it is not equivalent to maximum-strength Stockfish play.
+Stockfish performs the actual search. The balanced offline selector prefers the engine's top move and only introduces variation among candidates within a small centipawn-loss window. The window is tighter when converting an advantage or playing an endgame. It does not pad the candidate list with unsearched moves, and candidate analysis uses fewer principal variations so more search effort can go to each candidate.
 
-No Elo improvement is claimed: this change has not yet been benchmarked with paired games. For competitive or online play, follow the site's rules and use only permitted assistance.
+This is intended for local practice and analysis, not to conceal engine use or bypass online fair-play systems. It is not maximum-strength Stockfish play, and no Elo improvement is claimed until paired-game benchmarks have been run.
+
+## Checks
+
+GitHub Actions compiles `chessBotWin.py` and runs unit tests for the move-selection window. These checks do not replace a runtime test with a real Stockfish executable or paired-game strength benchmarks.
