@@ -1113,39 +1113,55 @@ class ChessGame:
     
     def _probabilistic_select_enhanced(self, scored_moves, is_winning, is_losing, phase, turn):
         """
-        Balanced offline selection: prioritize engine evaluation and vary only among
-        moves that are close in centipawn loss. Never deliberately choose a large blunder.
+        Offline human-style selection using a bounded engine-loss window plus
+        position-specific move preferences. This is a heuristic policy, not a
+        trained Maia/Allie neural model; engine quality remains a hard constraint.
         """
         if not scored_moves:
             return None
 
         best_score = scored_moves[0][1]
-        # Scores are White-relative, while the list is sorted best-first for side to move.
-        # Use a tighter band when converting an advantage or playing an endgame.
         if is_winning or phase == "endgame":
             max_loss = 12
+            loss_temperature = 7.0
+            human_influence = 0.30
         elif is_losing:
             max_loss = 24
+            loss_temperature = 13.0
+            human_influence = 0.65
         else:
             max_loss = 20
+            loss_temperature = 10.0
+            human_influence = 0.50
 
+        # Keep only moves close to the engine's best candidate. Preserve the
+        # existing tuple format: (move, engine_score, human_score, combined_score).
         comparable = []
         for item in scored_moves:
             move, move_score = item[0], item[1]
             loss = best_score - move_score if turn == chess.WHITE else move_score - best_score
             if 0 <= loss <= max_loss:
-                comparable.append((move, move_score, loss))
+                human_score = float(item[2]) if len(item) > 2 else 50.0
+                combined_score = float(item[3]) if len(item) > 3 else human_score
+                comparable.append((move, loss, human_score, combined_score))
 
         if not comparable:
             return scored_moves[0][0]
         if len(comparable) == 1:
             return comparable[0][0]
 
-        # Soft preference for the top engine move; alternatives receive less weight
-        # as their evaluation loss increases. This creates modest variation without
-        # intentionally selecting moves outside the bounded quality window.
-        weights = [max(0.05, 2.5 ** (-loss / 10.0)) for _, _, loss in comparable]
-        return random.choices([move for move, _, _ in comparable], weights=weights, k=1)[0]
+        best_human = max(item[2] for item in comparable)
+        best_combined = max(item[3] for item in comparable)
+        weights = []
+        for _, loss, human_score, combined_score in comparable:
+            # A softmax-like policy: engine loss suppresses weak moves, while
+            # natural move features affect the choice among comparably good moves.
+            engine_factor = 2.718281828 ** (-loss / loss_temperature)
+            human_factor = 2.718281828 ** (human_influence * (human_score - best_human) / 12.0)
+            combined_factor = 2.718281828 ** (0.20 * (combined_score - best_combined) / 12.0)
+            weights.append(max(0.001, engine_factor * human_factor * combined_factor))
+
+        return random.choices([item[0] for item in comparable], weights=weights, k=1)[0]
 
     def _calculate_thinking_time_optimized(self, complexity, is_losing, phase):
         """
