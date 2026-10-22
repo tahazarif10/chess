@@ -1036,11 +1036,7 @@ class ChessGame:
             if not board.is_capture(move) and not test_board.is_check():
                 if abs(move_score - position_score) < 30:
                     score += 15  # Quiet positional moves
-            # Avoid multi-move tactical calculations (human limitation)
-            if abs(move_score - position_score) > 150:
-                # Huge tactical jump - might be too engine-like
-                if random.random() > 0.25:  # 75% penalty chance (more aggressive)
-                    score -= 35  # Stronger penalty for engine-like tactics
+            # Do not penalize a forcing tactical improvement for being difficult to find.
         
         if is_winning and abs(position_score) > 150:
             # When ahead: Convert advantage more aggressively
