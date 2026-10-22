@@ -745,11 +745,17 @@ class ChessGame:
             
             safe_candidates = []
             for move, move_score in candidate_moves:
-                score_diff_from_best = abs(move_score - best_score) if best_score is not None else 0
-                score_diff_from_current = abs(move_score - score) if score is not None else 0
-                
-                # Never allow blunders (>80cp loss) - much tighter threshold for stronger play
-                if score_diff_from_current > 80:
+                # Candidate scores use White's perspective; measure loss against the
+                # best searched move for the side to move, not against the static position.
+                if best_score is None:
+                    score_loss_from_best = 0
+                elif temp_board.turn == chess.WHITE:
+                    score_loss_from_best = best_score - move_score
+                else:
+                    score_loss_from_best = move_score - best_score
+
+                # Keep the human-style choice inside a bounded engine-evaluation window.
+                if score_loss_from_best > 80:
                     continue
                 
                 # Human window: Tighter when winning for stronger play
