@@ -28,8 +28,28 @@ WHITE_COLOR, DARK_COLOR = (238, 238, 210), (118, 150, 86)
 HIGHLIGHT_COLOR = (255, 255, 0, 180)  # Yellow highlight for last move
 SELECT_COLOR = (100, 200, 255, 200)  # Blue highlight for selected square
 MOVE_HINT_COLOR = (150, 255, 150, 120)  # Green hint for possible moves
-ENGINE_PATH = r"J:\vs code\python\chessGame\stockfish\stockfish-windows-x86-64-avx2.exe"
-PIECE_FOLDER = r"J:\vs code\python\chessGame\pieces"
+BASE_DIR = Path(__file__).resolve().parent
+# Override with STOCKFISH_EXECUTABLE and CHESS_PIECES_DIR when needed.
+PIECE_FOLDER = os.environ.get("CHESS_PIECES_DIR", str(BASE_DIR / "pieces"))
+
+def resolve_engine_path():
+    """Find Stockfish portably instead of relying on the author's local drive."""
+    override = os.environ.get("STOCKFISH_EXECUTABLE")
+    candidates = [
+        override,
+        shutil.which("stockfish"),
+        str(BASE_DIR / "stockfish" / "stockfish-windows-x86-64-avx2.exe"),
+        str(BASE_DIR / "stockfish" / "stockfish.exe"),
+        str(BASE_DIR / "stockfish.exe"),
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return str(Path(candidate).resolve())
+    if override:
+        resolved = shutil.which(override)
+        if resolved:
+            return resolved
+    return None
 
 # Simple transposition cache (LRU, max 50 entries)
 class SimpleCache:
