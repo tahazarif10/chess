@@ -92,6 +92,7 @@ class ChessGame:
         self.maia_engine = None
         self._maia_lock = Lock()
         self._maia_unavailable_logged = False
+        self._maia_disabled = False
 
         self.piece_images = self.load_piece_images()
         self.player_color = self.choose_color_ui()
@@ -867,6 +868,8 @@ class ChessGame:
         fallback and independently evaluates every Maia move before acceptance.
         """
         with self._maia_lock:
+            if self._maia_disabled:
+                return None
             try:
                 if self.maia_engine is None:
                     self.maia_engine = chess.engine.SimpleEngine.popen_uci(
@@ -892,6 +895,7 @@ class ChessGame:
                 except Exception:
                     pass
                 self.maia_engine = None
+                self._maia_disabled = True
                 return None
 
     def _evaluate_position_quick_optimized_thread(self, board):
