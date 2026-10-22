@@ -14,30 +14,14 @@ Install Python dependencies:
 python -m pip install -r requirements.txt
 ```
 
-## Configure Stockfish
+## Original local paths
 
-The app searches for Stockfish in this order:
+To preserve the user's existing setup, `chessBotWin.py` uses these original Windows paths:
 
-1. The path in `STOCKFISH_EXECUTABLE`
-2. An executable named `stockfish` on `PATH`
-3. `stockfish/stockfish-windows-x86-64-avx2.exe` beside `chessBotWin.py`
-4. `stockfish/stockfish.exe` or `stockfish.exe` beside the script
+- Stockfish: `J:\\vs code\\python\\chessGame\\stockfish\\stockfish-windows-x86-64-avx2.exe`
+- Piece images: `J:\\vs code\\python\\chessGame\\pieces`
 
-Windows PowerShell example:
-
-```powershell
-$env:STOCKFISH_EXECUTABLE = "C:\\path\\to\\stockfish.exe"
-python .\\chessBotWin.py
-```
-
-Linux/macOS example:
-
-```bash
-export STOCKFISH_EXECUTABLE=/usr/bin/stockfish
-python chessBotWin.py
-```
-
-If the piece images are stored elsewhere, set `CHESS_PIECES_DIR` to that directory. Expected filenames are `white-pawn.png`, `black-pawn.png`, `white-knight.png`, `black-knight.png`, `white-bishop.png`, `black-bishop.png`, `white-rook.png`, `black-rook.png`, `white-queen.png`, `black-queen.png`, `white-king.png`, and `black-king.png`.
+The application logic and move-selection changes are all in the single `chessBotWin.py` file. Stockfish, the Python packages, and the piece image assets remain external dependencies and are not embedded in the Python source.
 
 ## Run
 
