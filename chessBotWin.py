@@ -3,7 +3,8 @@ Chess Game with Human-like AI
 Optimized for performance and stability
 """
 
-import pygame, chess, chess.engine, random, time, sys, os, chess.pgn
+import pygame, chess, chess.engine, random, time, sys, os, chess.pgn, shutil
+from pathlib import Path
 from datetime import datetime
 from threading import Thread, Lock
 from collections import OrderedDict
@@ -60,10 +61,16 @@ class ChessGame:
         
         # Initialize engine with error handling
         try:
-            self.engine = chess.engine.SimpleEngine.popen_uci(ENGINE_PATH)
+            engine_path = resolve_engine_path()
+            if not engine_path:
+                raise FileNotFoundError(
+                    "Stockfish was not found. Install it and add it to PATH, "
+                    "or set STOCKFISH_EXECUTABLE to the full executable path."
+                )
+            self.engine = chess.engine.SimpleEngine.popen_uci(engine_path)
         except Exception as e:
             print(f"❌ Engine initialization failed: {e}")
-            print(f"   Check path: {ENGINE_PATH}")
+            print("   Set STOCKFISH_EXECUTABLE or add stockfish to PATH.")
             sys.exit(1)
         
         self.piece_images = self.load_piece_images()
@@ -776,7 +783,12 @@ class ChessGame:
                 combined_score = self._combine_scores_enhanced(strength_score, human_score, is_winning, is_losing, phase)
                 scored_moves.append((move, move_score, human_score, combined_score))
             
-            scored_moves.sort(key=lambda x: x[3], reverse=True)
+            # Rank by engine evaluation first; style is only a tie-breaker.
+            # Candidate scores are normalized to White's perspective.
+            scored_moves.sort(
+                key=lambda x: (x[1] if temp_board.turn == chess.WHITE else -x[1], x[3]),
+                reverse=True
+            )
             
             # Select move
             try:
@@ -1056,14 +1068,7 @@ class ChessGame:
             # Castling is very human (safety + development)
             score += 20
         
-        # STRONG penalties for engine-only signatures (anti-cheat protection)
-        if not board.is_capture(move) and not test_board.is_check():
-            if abs(move_score - position_score) < 8:
-                if not is_winning or abs(position_score) < 150:
-                    score -= 45  # MUCH STRONGER penalty for engine moves
-        if abs(move_score - position_score) > 200:
-            if random.random() > 0.20:  # 80% penalty chance
-                score -= 55  # MUCH STRONGER penalty for engine-exclusive tactics
+        # Never penalize a tactically correct move merely because it resembles an engine choice.
         
         if piece_type == chess.QUEEN:
             for opp_move in test_board.legal_moves:
