@@ -764,6 +764,8 @@ class ChessGame:
             safety_window = self._calculate_safety_window_human(
                 is_winning, is_losing, phase, abs(score)
             )
+            if maia_move is not None:
+                safety_window = min(safety_window, MAIA3_MAX_STOCKFISH_LOSS_CP)
             safe_candidates = []
             for move, move_score in candidate_moves:
                 if temp_board.turn == chess.WHITE:
