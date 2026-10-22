@@ -4,6 +4,27 @@ Optimized for performance and stability
 """
 
 import pygame, chess, chess.engine, random, time, sys, os, chess.pgn
+
+# Maia-3 is an optional, offline human-move policy. Install/cache it separately.
+MAIA3_ENABLED = True
+MAIA3_MODEL = "maia3-5m"
+MAIA3_TARGET_ELO = 2000
+MAIA3_ACCEPTANCE_PROBABILITY = 0.65
+MAIA3_MAX_STOCKFISH_LOSS_CP = 100
+MAIA3_ENGINE_TIMEOUT = 120
+
+
+def _build_maia3_command():
+    """Build an offline-only Maia-3 UCI command for CPU inference."""
+    return [
+        sys.executable, "-m", "maia3.uci",
+        "--model", MAIA3_MODEL,
+        "--device", "cpu",
+        "--no-use-amp",
+        "--use-uci-history",
+        "--elo", str(MAIA3_TARGET_ELO),
+        "--local-files-only",
+    ]
 from datetime import datetime
 from threading import Thread, Lock
 from collections import OrderedDict
@@ -67,6 +88,12 @@ class ChessGame:
             print(f"   Check the original Stockfish path: {ENGINE_PATH}")
             sys.exit(1)
         
+        # Start Maia lazily on the AI worker thread; a missing model must not stop the game.
+        self.maia_engine = None
+        self._maia_lock = Lock()
+        self._maia_unavailable_logged = False
+        self._maia_disabled = False
+
         self.piece_images = self.load_piece_images()
         self.player_color = self.choose_color_ui()
         self.style_name, self.style_weights = self.select_play_style()
@@ -708,11 +735,38 @@ class ChessGame:
                 self._ai_move_queue.put((start_fen, legal[0] if legal else None))
                 return
             
+            # Maia proposes a human move; Stockfish independently checks its tactical cost.
+            # If Maia is absent/not cached, the existing Stockfish-based path remains active.
+            maia_move = self._get_maia3_move(temp_board) if MAIA3_ENABLED else None
+            if maia_move is not None and maia_move in legal:
+                try:
+                    maia_info = self.engine.analyse(
+                        temp_board,
+                        chess.engine.Limit(time=0.18),
+                        root_moves=[maia_move],
+                    )
+                    maia_score_obj = maia_info.get("score") if isinstance(maia_info, dict) else None
+                    if maia_score_obj and hasattr(maia_score_obj, "relative"):
+                        maia_score = maia_score_obj.relative.score(mate_score=10000)
+                        if temp_board.turn == chess.BLACK and maia_score is not None:
+                            maia_score = -maia_score
+                        if maia_score is not None and not any(m == maia_move for m, _ in candidate_moves):
+                            candidate_moves.append((maia_move, maia_score))
+                            candidate_moves.sort(
+                                key=lambda item: item[1],
+                                reverse=(temp_board.turn == chess.WHITE),
+                            )
+                except Exception as e:
+                    print(f"⚠️ Maia move validation failed; keeping Stockfish candidates: {e}")
+                    maia_move = None
+
             # Keep variation among genuinely comparable moves only. Scores are from White's perspective.
             best_score = candidate_moves[0][1] if candidate_moves else score
             safety_window = self._calculate_safety_window_human(
                 is_winning, is_losing, phase, abs(score)
             )
+            if maia_move is not None:
+                safety_window = min(safety_window, MAIA3_MAX_STOCKFISH_LOSS_CP)
             safe_candidates = []
             for move, move_score in candidate_moves:
                 if temp_board.turn == chess.WHITE:
@@ -726,6 +780,13 @@ class ChessGame:
             if not safe_candidates and candidate_moves:
                 safe_candidates = candidate_moves[:1]
             
+            # Prefer Maia only when Stockfish confirms it is inside the configured safety window.
+            # The probabilistic choice preserves human policy without accepting large blunders.
+            preferred_maia_move = None
+            if maia_move is not None and any(move == maia_move for move, _ in safe_candidates):
+                if random.random() < MAIA3_ACCEPTANCE_PROBABILITY:
+                    preferred_maia_move = maia_move
+
             # Score moves
             scored_moves = []
             for move, move_score in safe_candidates:
@@ -741,12 +802,15 @@ class ChessGame:
                 reverse=True
             )
             
-            # Select move
-            try:
-                selected = self._probabilistic_select_enhanced(scored_moves, is_winning, is_losing, phase, temp_board.turn)
-            except Exception as e:
-                print(f"⚠️ Selection error: {e}")
-                selected = None
+            # Select move: Maia policy is used only for an independently safe candidate.
+            if preferred_maia_move is not None:
+                selected = preferred_maia_move
+            else:
+                try:
+                    selected = self._probabilistic_select_enhanced(scored_moves, is_winning, is_losing, phase, temp_board.turn)
+                except Exception as e:
+                    print(f"⚠️ Selection error: {e}")
+                    selected = None
             
             if not selected:
                 if safe_candidates:
@@ -797,6 +861,43 @@ class ChessGame:
             except Exception:
                 pass  # Queue might be closed
     
+    def _get_maia3_move(self, board):
+        """Return Maia-3's human-policy move, or None if unavailable.
+
+        Maia is launched lazily and in offline-only mode. Stockfish remains the
+        fallback and independently evaluates every Maia move before acceptance.
+        """
+        with self._maia_lock:
+            if self._maia_disabled:
+                return None
+            try:
+                if self.maia_engine is None:
+                    self.maia_engine = chess.engine.SimpleEngine.popen_uci(
+                        _build_maia3_command(),
+                        timeout=MAIA3_ENGINE_TIMEOUT,
+                    )
+                result = self.maia_engine.play(
+                    board,
+                    chess.engine.Limit(nodes=1),
+                )
+                move = getattr(result, "move", None)
+                return move if move in board.legal_moves else None
+            except Exception as e:
+                if not self._maia_unavailable_logged:
+                    print(
+                        "⚠️ Maia-3 unavailable (not installed or model not cached); "
+                        f"continuing with Stockfish-only selection. Details: {e}"
+                    )
+                    self._maia_unavailable_logged = True
+                try:
+                    if self.maia_engine is not None:
+                        self.maia_engine.close()
+                except Exception:
+                    pass
+                self.maia_engine = None
+                self._maia_disabled = True
+                return None
+
     def _evaluate_position_quick_optimized_thread(self, board):
         """Thread-safe position evaluation - ENHANCED for stronger play"""
         try:
@@ -1304,7 +1405,12 @@ class ChessGame:
         if self._ai_thread and self._ai_thread.is_alive():
             self._ai_thread.join(timeout=1.0)
         
-        # Close engine exactly once
+        # Close Maia and Stockfish independently; either may be unavailable.
+        try:
+            if getattr(self, "maia_engine", None) is not None:
+                self.maia_engine.quit()
+        except Exception as e:
+            print(f"⚠️ Maia-3 quit error: {e}")
         try:
             if hasattr(self, 'engine') and self.engine:
                 self.engine.quit()
