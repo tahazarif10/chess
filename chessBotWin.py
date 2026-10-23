@@ -9,8 +9,10 @@ import pygame, chess, chess.engine, random, time, sys, os, chess.pgn
 MAIA3_ENABLED = True
 MAIA3_MODEL = "maia3-5m"
 MAIA3_TARGET_ELO = 2000
-MAIA3_ACCEPTANCE_PROBABILITY = 0.65
-MAIA3_MAX_STOCKFISH_LOSS_CP = 100
+MAIA3_ACCEPTANCE_PROBABILITY = 0.88
+MAIA3_MAX_STOCKFISH_LOSS_CP = 65
+MAIA3_FORCING_MAX_LOSS_CP = 12
+MAIA3_QUIET_MAX_LOSS_CP = 65
 MAIA3_ENGINE_TIMEOUT = 120
 
 
@@ -760,13 +762,23 @@ class ChessGame:
                     print(f"⚠️ Maia move validation failed; keeping Stockfish candidates: {e}")
                     maia_move = None
 
-            # Keep variation among genuinely comparable moves only. Scores are from White's perspective.
+            # Learned human move policy first; Stockfish is a tactical guardrail.
             best_score = candidate_moves[0][1] if candidate_moves else score
-            safety_window = self._calculate_safety_window_human(
-                is_winning, is_losing, phase, abs(score)
+            forcing_position = (
+                temp_board.is_check()
+                or any(temp_board.is_capture(m) for m in legal)
+                or any(m.promotion is not None for m in legal)
+                or abs(best_score) >= 9000
             )
             if maia_move is not None:
-                safety_window = min(safety_window, MAIA3_MAX_STOCKFISH_LOSS_CP)
+                safety_window = (
+                    MAIA3_FORCING_MAX_LOSS_CP if forcing_position
+                    else MAIA3_QUIET_MAX_LOSS_CP
+                )
+            else:
+                safety_window = self._calculate_safety_window_human(
+                    is_winning, is_losing, phase, abs(score)
+                )
             safe_candidates = []
             for move, move_score in candidate_moves:
                 if temp_board.turn == chess.WHITE:
@@ -1132,20 +1144,8 @@ class ChessGame:
             if move.to_square in recent_to_squares and move.from_square in recent_moves:
                 score -= 25
         
-        # Prefer moves within 20-50cp window (human evaluation - not perfect)
-        # Humans don't always find the best move, they find "good enough" moves
-        score_diff = abs(move_score - position_score) if position_score else 0
-        if 20 <= score_diff <= 50:  # Sweet spot for human moves (slightly worse than perfect)
-            score += 45  # STRONG preference for "human-like" moves
-        elif 10 <= score_diff < 20:
-            score += 30  # Good moves, but not too perfect
-        elif score_diff < 10:
-            score += 15  # Too perfect - might be engine-like (reduced bonus)
-        elif score_diff < 70:
-            score += 20  # Acceptable human error range
-        # Moves 70-120cp worse: small penalty (human can make these mistakes)
-        elif score_diff < 120:
-            score -= 5  # Small penalty but still human
+        # Human likeness is about plausible plans, not intentionally choosing
+        # moves 20-50 centipawns worse. Maia supplies the learned human policy.
         
         return max(0.0, min(100.0, score))
     
